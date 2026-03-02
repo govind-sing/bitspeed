@@ -1,10 +1,9 @@
-import express from "express";
-import type { Request, Response } from "express"; // Added 'type' here
-import { PrismaClient } from "@prisma/client";
+import express from 'express';
+import type { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const app = express();
-
 app.use(express.json());
 
 app.post("/identify", async (req: Request, res: Response) => {
@@ -16,13 +15,14 @@ app.post("/identify", async (req: Request, res: Response) => {
     }
 
     const strPhone = phoneNumber ? String(phoneNumber) : null;
+    const strEmail = email ? String(email) : null;
 
-    // 1. Fetch all potentially related contacts
+    // 1. Fetch related contacts
     const existingContacts = await prisma.contact.findMany({
       where: {
         OR: [
-          { email: email ?? undefined },
-          { phoneNumber: strPhone ?? undefined },
+          { email: strEmail },
+          { phoneNumber: strPhone },
         ],
       },
     });
@@ -31,9 +31,10 @@ app.post("/identify", async (req: Request, res: Response) => {
     if (existingContacts.length === 0) {
       const newContact = await prisma.contact.create({
         data: {
-          email: email ?? null,
+          email: strEmail,
           phoneNumber: strPhone,
           linkPrecedence: "primary",
+          linkedId: null, 
         },
       });
 
@@ -47,26 +48,22 @@ app.post("/identify", async (req: Request, res: Response) => {
       });
     }
 
-    // 3. Identify all unique primary IDs involved
-    // If a contact is secondary, we look at its linkedId. If primary, we use its own ID.
+    // 3. Identify Root Primary IDs
     let rootPrimaryIds = Array.from(new Set(
       existingContacts.map(c => c.linkPrecedence === "primary" ? c.id : c.linkedId!)
     ));
 
-    // 4. Scenario: Merging two existing Primary "Islands"
-    // This happens if email matches Primary A and phone matches Primary B.
+    // 4. Scenario: Merging "Islands"
     if (rootPrimaryIds.length > 1) {
-      // Find the actual primary records to find the oldest one
       const primaries = await prisma.contact.findMany({
         where: { id: { in: rootPrimaryIds } },
         orderBy: { createdAt: 'asc' }
       });
 
-      const actualRoot = primaries[0];
+      const actualRoot = primaries[0]!; 
       const othersToDowngrade = primaries.slice(1);
 
       for (const other of othersToDowngrade) {
-        // Turn the newer primary into a secondary of the oldest one
         await prisma.contact.update({
           where: { id: other.id },
           data: { 
@@ -74,7 +71,6 @@ app.post("/identify", async (req: Request, res: Response) => {
             linkedId: actualRoot.id 
           }
         });
-        // Also update any secondary contacts that were pointing to the downgraded primary
         await prisma.contact.updateMany({
           where: { linkedId: other.id },
           data: { linkedId: actualRoot.id }
@@ -83,17 +79,16 @@ app.post("/identify", async (req: Request, res: Response) => {
       rootPrimaryIds = [actualRoot.id];
     }
 
-    const primaryId = rootPrimaryIds[0];
+    const primaryId = rootPrimaryIds[0]!;
 
-    // 5. Scenario: New Information for an existing user
-    // Check if the current request contains an email or phone we haven't seen in this cluster
-    const isNewEmail = email && !existingContacts.some(c => c.email === email);
+    // 5. Scenario: New Information Check
+    const isNewEmail = strEmail && !existingContacts.some(c => c.email === strEmail);
     const isNewPhone = strPhone && !existingContacts.some(c => c.phoneNumber === strPhone);
 
     if (isNewEmail || isNewPhone) {
       await prisma.contact.create({
         data: {
-          email: email ?? null,
+          email: strEmail,
           phoneNumber: strPhone,
           linkedId: primaryId,
           linkPrecedence: "secondary",
@@ -101,30 +96,26 @@ app.post("/identify", async (req: Request, res: Response) => {
       });
     }
 
-    // 6. Consolidate final response
-    // Fetch the entire family tree (Primary + all Secondaries)
+    // 6. Final Consolidation (Ensuring Primary Info is First)
     const allContacts = await prisma.contact.findMany({
       where: {
-        OR: [
-          { id: primaryId },
-          { linkedId: primaryId }
-        ]
+        OR: [{ id: primaryId }, { linkedId: primaryId }]
       },
       orderBy: { createdAt: 'asc' }
     });
 
     const primaryRecord = allContacts.find(c => c.id === primaryId)!;
     
-    // Ensure the primary email/phone comes first in the arrays
+    // Array logic to ensure Primary email/phone is at index [0]
     const emails = Array.from(new Set([
       primaryRecord.email, 
       ...allContacts.map(c => c.email)
-    ])).filter(Boolean);
+    ])).filter((e): e is string => Boolean(e));
 
     const phoneNumbers = Array.from(new Set([
       primaryRecord.phoneNumber, 
       ...allContacts.map(c => c.phoneNumber)
-    ])).filter(Boolean);
+    ])).filter((p): p is string => Boolean(p));
 
     const secondaryContactIds = allContacts
       .filter(c => c.id !== primaryId)
@@ -144,7 +135,6 @@ app.post("/identify", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
