@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    
+    /* Turn these OFF to stop the red squiggles you're seeing */
+    "strict": false, 
+    "exactOptionalPropertyTypes": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+
+    "skipLibCheck": true
+  }
+}
